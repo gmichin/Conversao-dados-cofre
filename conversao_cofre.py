@@ -2,6 +2,8 @@ import pandas as pd
 import os
 from datetime import datetime
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
+from openpyxl.utils.dataframe import dataframe_to_rows
 
 def processar_relatorio_nfe_final(caminho_arquivo):
     """
@@ -143,77 +145,87 @@ def processar_relatorio_nfe_final(caminho_arquivo):
         novo_nome = f"{nome_sem_ext}_FORMATADO.xlsx"
         novo_caminho = os.path.join(caminho_pasta, novo_nome)
         
-        # PRIMEIRO: Salvar o DataFrame sem formatação
-        df_final.to_excel(novo_caminho, index=False, sheet_name='Produtos')
-        
-        # SEGUNDO: Abrir com openpyxl e aplicar formatação correta
-        from openpyxl import load_workbook
-        
-        wb = load_workbook(novo_caminho)
-        ws = wb.active
-        
-        # Encontrar a coluna "Valor" (coluna F = 6)
-        coluna_valor_idx = None
-        for col in range(1, ws.max_column + 1):
-            if ws.cell(row=1, column=col).value == 'Valor':
-                coluna_valor_idx = col
-                break
-        
-        if coluna_valor_idx:
-            print(f"📌 Aplicando formatação de MOEDA na coluna {coluna_valor_idx}")
+        # Usar ExcelWriter para ter mais controle sobre a formatação
+        with pd.ExcelWriter(novo_caminho, engine='openpyxl') as writer:
+            # Salvar o DataFrame
+            df_final.to_excel(writer, index=False, sheet_name='Produtos')
             
-            # USANDO O CÓDIGO DE FORMATO QUE O EXCEL RECONHECE COMO "MOEDA"
-            # O código 7 no Excel é para moeda sem dígitos decimais
-            # O código 8 no Excel é para moeda com 2 dígitos decimais
-            # O formato completo para moeda brasileira:
+            # Acessar a planilha e workbook
+            workbook = writer.book
+            worksheet = writer.sheets['Produtos']
             
-            # Formato que o Excel mostra como "Moeda" na caixa de diálogo
-            formato_excel_moeda = '_("R$"* #,##0.00_);_("R$"* (#,##0.00);_("R$"* "-"??_);_(@_)'
+            # Definir o formato de moeda para a coluna Valor
+            # Primeiro encontramos qual coluna é "Valor"
+            col_idx = None
+            for idx, col in enumerate(df_final.columns, 1):
+                if col == 'Valor':
+                    col_idx = idx
+                    break
             
-            # Aplicar a TODAS as células da coluna Valor
-            for row in range(2, ws.max_row + 1):
-                cell = ws.cell(row=row, column=coluna_valor_idx)
-                if cell.value is not None:
-                    cell.number_format = formato_excel_moeda
-        
-        # Ajustar larguras das colunas
-        for col in ws.columns:
-            max_length = 0
-            column_letter = col[0].column_letter
-            for cell in col:
-                try:
-                    if cell.value and len(str(cell.value)) > max_length:
-                        max_length = len(str(cell.value))
-                except:
-                    pass
-            adjusted_width = min(max_length + 2, 50)
-            ws.column_dimensions[column_letter].width = adjusted_width
-        
-        # Salvar as alterações
-        wb.save(novo_caminho)
+            # Aplicar formatação de moeda se encontramos a coluna
+            if col_idx:
+                col_letter = get_column_letter(col_idx)
+                
+                # Formato Excel para moeda brasileira
+                formato_moeda = '_("R$"* #,##0.00_);_("R$"* (#,##0.00);_("R$"* "-"??_);_(@_)'
+                
+                # Aplicar formatação a todas as células da coluna Valor
+                for row in range(2, len(df_final) + 2):  # +2 porque row=1 é cabeçalho
+                    cell = worksheet.cell(row=row, column=col_idx)
+                    cell.number_format = formato_moeda
+            
+            # Ajustar larguras das colunas
+            for column in worksheet.columns:
+                max_length = 0
+                column_letter = column[0].column_letter
+                
+                # Encontrar o comprimento máximo na coluna
+                for cell in column:
+                    try:
+                        if cell.value and len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                
+                # Ajustar largura com um limite
+                adjusted_width = min(max_length + 2, 50)
+                worksheet.column_dimensions[column_letter].width = adjusted_width
+            
+            # Definir o nome da tabela (evitar caracteres especiais)
+            table_name = "TabelaProdutos"
+            
+            # Adicionar a tabela do Excel (como "Inserir Tabela")
+            # Definir o intervalo da tabela
+            max_row = len(df_final) + 1  # +1 para incluir o cabeçalho
+            max_col = len(df_final.columns)
+            
+            # Criar referência do estilo da tabela (ex: TableStyleMedium9 é um estilo azul)
+            tab = Table(displayName=table_name, 
+                       ref=f"A1:{get_column_letter(max_col)}{max_row}")
+            
+            # Escolher um estilo de tabela (você pode mudar o estilo aqui)
+            # Estilos disponíveis: TableStyleLight1 até TableStyleLight21
+            # TableStyleMedium1 até TableStyleMedium28
+            # TableStyleDark1 até TableStyleDark11
+            style = TableStyleInfo(name="TableStyleMedium9", 
+                                  showFirstColumn=False,
+                                  showLastColumn=False, 
+                                  showRowStripes=True,
+                                  showColumnStripes=False)
+            
+            tab.tableStyleInfo = style
+            worksheet.add_table(tab)
+            
+            # Congelar o cabeçalho (linha 1)
+            worksheet.freeze_panes = "A2"
         
         print(f"✅ Arquivo salvo: {novo_caminho}")
         print(f"📊 Total de produtos: {len(df_final)}")
+        print(f"📋 Tabela Excel criada com nome: {table_name}")
         
         # Formatar a soma total para exibição no console
         soma_total = df_final['Valor'].sum()
-        print(f"💰 Soma total: R$ {soma_total:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        
-        # Mostrar exemplos
-        print(f"\n📋 Exemplos de valores CORRETOS:")
-        print(f"  • Nota 22: FILE DE PEITO → R$ 45.000,00 ✓")
-        print(f"  • Nota 22: MEIO DAS ASAS → R$ 36.000,00 ✓")
-        print(f"  • Nota 105: COSTELA → R$ 1.200,00 ✓")
-        print(f"  • Nota 105: PE SALGADO → R$ 400,00 ✓")
-        print(f"  • Nota 105: RABO SUINO → R$ 990,00 ✓")
-        
-        print(f"\n🔍 NO EXCEL:")
-        print(f"  1. Abra o arquivo")
-        print(f"  2. Selecione uma célula da coluna 'Valor'")
-        print(f"  3. Pressione Ctrl+1")
-        print(f"  4. A categoria será 'MOEDA'")
-        print(f"  5. Símbolo: R$")
-        print(f"  6. Casas decimais: 2")
+    
         
         return novo_caminho, df_final
         
@@ -224,15 +236,6 @@ def processar_relatorio_nfe_final(caminho_arquivo):
         return None, None
 
 def main():
-    print("=" * 60)
-    print("CONVERSOR NFE - VOG ALIMENTOS")
-    print("=" * 60)
-    print("✓ Pega valores da COLUNA 5 (Valor Total dos produtos)")
-    print("✓ Uma linha por produto")
-    print("✓ Coluna 'Valor' formatada como MOEDA (não Personalizado)")
-    print("✓ Formato específico do Excel para categoria 'Moeda'")
-    print("=" * 60)
-    
     caminho_arquivo = r"C:\Users\win11\Downloads\RelatorioNFe-17-12-25 153350.xlsx"
     
     if not os.path.exists(caminho_arquivo):
@@ -241,15 +244,5 @@ def main():
     
     novo_caminho, df_resultado = processar_relatorio_nfe_final(caminho_arquivo)
     
-    if df_resultado is not None:
-        print("\n" + "=" * 60)
-        print("✅ PROCESSAMENTO CONCLUÍDO!")
-        print("=" * 60)
-        print(f"Arquivo gerado: {novo_caminho}")
-        print(f"\n📋 VERIFIQUE NO EXCEL:")
-        print(f"  Categoria: Moeda ✓")
-        print(f"  Símbolo: R$ ✓")
-        print(f"  Formato: R$ 45.000,00 ✓")
-
 if __name__ == "__main__":
     main()
